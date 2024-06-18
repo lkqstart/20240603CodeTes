@@ -1,31 +1,39 @@
-package com.lukaiqi.distributed.lock.controller;
+package org.example.pong.controller;
+
+import lombok.extern.slf4j.Slf4j;
+import org.example.pong.RateLimiterUtil;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
-import java.util.concurrent.atomic.AtomicInteger;
+import reactor.core.publisher.Mono;
+
+import java.util.Arrays;
+import java.util.List;
 
 @RestController
-public class PongController {
-    private final AtomicInteger requestCount = new AtomicInteger(0);
-    private long lastResetTime = System.currentTimeMillis();
+@Slf4j
+class PongController {
 
     @GetMapping("/pong")
-    public ResponseEntity<String> getPong() {
-        synchronized (this) {
-            //判断是否超出
-            if (System.currentTimeMillis() - lastResetTime > 1000) {
-                requestCount.set(0);
-                lastResetTime = System.currentTimeMillis();
-            }
-            //判断是否超限
-            if (requestCount.incrementAndGet() > 1) {
-                //超限请求返回HTTP 429状态码
-                return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).build();
+    public Mono<ResponseEntity<String>> pong() {
+        List<String> fileNames = Arrays.asList("global.lock");
+        Boolean flag = false;
+        for (String fileName : fileNames) {
+            if (RateLimiterUtil.tryLock(fileName, 1L)) {
+                flag = true;
+                break;
             }
         }
-        //请求成功
-        return ResponseEntity.ok("World");
+        if (flag) {
+            return Mono.just(ResponseEntity.ok("Pong Response World"));
+        }
+
+        return Mono.just(ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).body("429 Too Many Requests"));
     }
 
+
 }
+
+
+
