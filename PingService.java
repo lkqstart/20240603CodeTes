@@ -1,76 +1,72 @@
-package com.lukaiqi.distributed.lock.service;
+package org.example.ping.controller;
+
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.data.redis.core.RedisTemplate;
-import org.springframework.scheduling.annotation.Scheduled;
-import org.springframework.stereotype.Service;
-import org.springframework.web.reactive.function.client.WebClient;
-import java.io.File;
-import java.io.RandomAccessFile;
-import java.nio.channels.FileChannel;
-import java.nio.channels.FileLock;
-import java.time.Duration;
+import org.example.ping.RateLimiterUtil;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
 
-@Service
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.util.List;
+
+
+@RestController
 @Slf4j
-public class PingService {
+public class PingController {
 
-    //使用@Scheduled注解，每秒尝试获取锁并发送请求。
-    @Scheduled(fixedRate = 1000)
-    public void FileLockSendPing() {
-        try (FileChannel channel = new RandomAccessFile(new File("global.lock"), "rw").getChannel()) {
-            FileLock lock = channel.tryLock();
-            //确保在多个JVM实例中，每秒只有一个实例能发送请求。
-            if (lock != null) {
-                try {
-                    //使用WebClient发送HTTP请求。
-                    webClient.get()
-                            .uri("/pong")
-                            .retrieve()
-                            .bodyToMono(String.class)
-                            //输出对应结果
-                            .subscribe(response -> log.info("Ping sent successfully: " + response),
-                                    error -> log.error("Ping failed: " + error.getMessage()));
-                } finally {
-                    lock.release();
+    private static final String PONG_SERVICE_URL = "http://localhost:8081/pong";
+
+
+    @GetMapping("/ping")
+    public ResponseEntity<String> ping(@RequestParam("fileNames") List<String> fileNames) {
+        Boolean flag = false;
+        //要操作的文件名列表
+        for (String fileName : fileNames) {
+            //尝试获取对应文件的锁.
+            if (RateLimiterUtil.tryLock(fileName, 1L)) {
+                flag = true;
+                break;
+            }
+        }
+        //文件的锁获取成功
+        if (flag) {
+            return sendPongRequest();
+        }
+            return sendPongRequest();
+    }
+
+
+    private ResponseEntity<String> sendPongRequest() {
+        try {
+            log.info("Ping Request Hello");
+            HttpURLConnection connection = (HttpURLConnection) new URL(PONG_SERVICE_URL).openConnection();
+            connection.setRequestMethod("GET");
+            int responseCode = connection.getResponseCode();
+            if (responseCode == 200) {
+                StringBuilder response = new StringBuilder();
+                try (BufferedReader in = new BufferedReader(new InputStreamReader(connection.getInputStream()))) {
+                    String inputLine;
+                    while ((inputLine = in.readLine()) != null) {
+                        response.append(inputLine);
+                    }
                 }
+                //返回响应结果
+                log.info(response.toString());
+                return ResponseEntity.ok("200 Ping Request Hello" + " | " + response.toString());
             } else {
-                log.error("Ping failed: Rate limited");
+                log.warn("429 Too Many Requests");
+                log.warn("430 Rate limited, Pong throttled it");
+                return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).body("Rate limited, Pong throttled it");
             }
         } catch (Exception e) {
-            log.error("Ping failed: " + e.getMessage());
+            throw new RuntimeException(e);
         }
-        /*
-        验证Ping服务日志
-	    查看不同的结果：
-		Ping sent successfully: World
-		Ping failed: 429 Too Many Requests
-		Ping failed: Rate limited
-     */
+
     }
-
-    private final WebClient webClient = WebClient.create("http://123.123.123.12:8081");
-
-    @Autowired
-    private RedisTemplate redisTemplate;
-    @Value("${redis.lock.key}")
-    private String redisLockKey;
-
-    //使用@Scheduled注解，每秒发送一次请求。
-    @Scheduled(fixedRate = 1000)
-    public void sendPing() {
-        //使用Redis分布式锁(redis.setnx)实现全局速率限制，确保每秒只有一个实例发送请求
-        Boolean lockAcquired = redisTemplate.opsForValue().setIfAbsent(redisLockKey, "locked", Duration.ofSeconds(1));
-        if (Boolean.TRUE.equals(lockAcquired)) {
-            webClient.get().uri("/pong").retrieve().bodyToMono(String.class)
-                    .doOnSuccess(response -> log.info("Ping sent successfully: " + response))
-                    .doOnError(error -> log.error("Ping failed: " + error.getMessage()))
-                    //释放锁
-                    .doFinally(signal -> redisTemplate.delete(redisLockKey))
-                    .subscribe();
-        }
-    }
-
-
 }
+
